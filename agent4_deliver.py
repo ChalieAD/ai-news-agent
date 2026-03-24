@@ -1,9 +1,10 @@
 """
 Agent 4 — Delivery
-Two outputs:
+Three outputs:
   1. Saves a markdown summary to the Obsidian vault:
      C:\\Users\\aryam\\Desktop\\Jarvis Brain\\04 - AI News\\YYYY-MM-DD.md
-  2. Emails the HTML report via Gmail SMTP (same setup as Candle Intel)
+  2. Emails the HTML report via Gmail SMTP
+  3. Writes a run summary to Supabase (jarvis-hq / agent_outputs table)
 """
 
 import os
@@ -15,6 +16,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -125,6 +127,7 @@ def save_to_vault(items: list[dict]) -> str:
 
 # ── Output 2: Email ───────────────────────────────────────────────────────────
 
+
 def build_plain_text(date_fmt: str, item_count: int) -> str:
     return f"""Jarvis AI Briefing — {date_fmt}
 
@@ -188,6 +191,65 @@ def send_email(html_content: str, html_path: str, item_count: int) -> None:
     print(f"  Sent to {recipient}")
 
 
+# ── Output 3: Supabase ────────────────────────────────────────────────────────
+
+def build_supabase_summary(items: list[dict]) -> dict:
+    top = items[:10]
+    cat_counts: dict[str, int] = {}
+    sources: dict[str, int] = {}
+    for item in top:
+        cat = item.get("ai_category", "JUST_NEWS")
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        src = item.get("source", "Unknown")
+        sources[src] = sources.get(src, 0) + 1
+
+    return {
+        "total_scored":    len(items),
+        "items_in_report": len(top),
+        "avg_score":       round(sum(i.get("ai_score", 0) for i in top) / len(top), 1) if top else 0,
+        "action_required": sum(1 for i in top if i.get("action_required")),
+        "by_category":     cat_counts,
+        "sources":         sources,
+        "top_items": [
+            {
+                "title":           i.get("title", "")[:120],
+                "score":           i.get("ai_score", 0),
+                "category":        i.get("ai_category", ""),
+                "url":             i.get("url", ""),
+                "action_required": i.get("action_required", False),
+            }
+            for i in top[:5]
+        ],
+    }
+
+
+def write_to_supabase(summary: dict) -> None:
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+
+    if not url or not key:
+        print("  [Supabase] SUPABASE_URL/SUPABASE_KEY not set — skipping")
+        return
+
+    resp = requests.post(
+        f"{url}/rest/v1/agent_outputs",
+        headers={
+            "apikey":        key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type":  "application/json",
+            "Prefer":        "return=minimal",
+        },
+        json={
+            "agent_name": "ai-news-agent",
+            "run_date":   date.today().isoformat(),
+            "summary":    summary,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    print("  [Supabase] Run summary written to agent_outputs")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run() -> None:
@@ -203,18 +265,27 @@ def run() -> None:
     print(f"  HTML report: {html_path}\n")
 
     # Output 1: Obsidian vault
-    print("  [1/2] Saving to Obsidian vault...")
+    print("  [1/3] Saving to Obsidian vault...")
     save_to_vault(items)
 
     # Output 2: Email
-    print("\n  [2/2] Sending email...")
+    print("\n  [2/3] Sending email...")
     try:
         send_email(html_content, html_path, len(items))
-        print("  [OK] Email delivered successfully.\n")
+        print("  [OK] Email delivered successfully.")
     except EnvironmentError as e:
-        print(f"  [SKIP] Email skipped: {e}\n")
+        print(f"  [SKIP] Email skipped: {e}")
     except Exception as e:
-        print(f"  [ERROR] Email failed: {e}\n")
+        print(f"  [ERROR] Email failed: {e}")
+        raise
+
+    # Output 3: Supabase
+    print("\n  [3/3] Writing to Supabase...")
+    try:
+        summary = build_supabase_summary(items)
+        write_to_supabase(summary)
+    except Exception as e:
+        print(f"  [ERROR] Supabase write failed: {e}\n")
         raise
 
 
