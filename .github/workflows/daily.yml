@@ -28,6 +28,8 @@ jobs:
           EMAIL_PASSWORD:     ${{ secrets.EMAIL_PASSWORD }}
           TO_EMAIL:           ${{ secrets.TO_EMAIL }}
           PRODUCTHUNT_TOKEN:  ${{ secrets.PRODUCTHUNT_TOKEN }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
         run: python run.py
 
       - name: Upload reports as artefacts
