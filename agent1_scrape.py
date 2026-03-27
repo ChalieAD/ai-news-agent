@@ -10,6 +10,7 @@ Saves combined results to data/items_YYYY-MM-DD.json
 
 import json
 import time
+import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 
@@ -118,11 +119,11 @@ def scrape_huggingface(limit: int = LIMIT) -> list[dict]:
     return items
 
 
-# ── VentureBeat AI ────────────────────────────────────────────────────────────
+# ── VentureBeat AI (RSS feed — avoids bot detection) ─────────────────────────
 
 def scrape_venturebeat(limit: int = LIMIT) -> list[dict]:
-    print("  [VentureBeat] Fetching venturebeat.com/category/ai/...")
-    url = "https://venturebeat.com/category/ai/"
+    print("  [VentureBeat] Fetching RSS feed...")
+    url = "https://venturebeat.com/category/ai/feed/"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -130,33 +131,23 @@ def scrape_venturebeat(limit: int = LIMIT) -> list[dict]:
         print(f"  [VentureBeat] Request failed: {e}")
         return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError as e:
+        print(f"  [VentureBeat] XML parse error: {e}")
+        return []
+
     items = []
-
-    for article in soup.find_all("article"):
-        a = article.find("a", href=True)
-        if not a:
+    for item in root.iter("item"):
+        title = item.findtext("title", "").strip()
+        link  = item.findtext("link", "").strip()
+        if not title or not link or len(title) < 10:
             continue
-        href = a["href"]
-        if "venturebeat.com" not in href and not href.startswith("/"):
-            continue
-
-        title_el = article.find(["h2", "h3", "h4"])
-        title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
-        if not title or len(title) < 10:
-            continue
-
-        full_url = href if href.startswith("http") else f"https://venturebeat.com{href}"
-
-        if any(i["url"] == full_url for i in items):
-            continue
-
         items.append({
             "source": "VentureBeat AI",
-            "title": title,
-            "url": full_url,
+            "title":  title,
+            "url":    link,
         })
-
         if len(items) >= limit:
             break
 
