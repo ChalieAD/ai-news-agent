@@ -1,241 +1,166 @@
 """
 Agent 1 — Scraper
-Pulls top AI/ML/automation stories from three sources:
-  - HackerNews  (top 30, keyword filtered)
-  - ProductHunt (top 5 today, ai / developer-tools topics)
-  - Reddit r/artificial (top 10 today, no auth needed)
+Pulls the latest 5 articles from three curated sources:
+  - Anthropic News   (anthropic.com/news)
+  - HuggingFace Blog (huggingface.co/blog)
+  - VentureBeat AI   (venturebeat.com/category/ai/)
 
 Saves combined results to data/items_YYYY-MM-DD.json
 """
 
 import json
-import os
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Keywords to keep from HackerNews ─────────────────────────────────────────
-
-AI_KEYWORDS = {
-    # Core AI/ML
-    "ai", "artificial intelligence", "machine learning", "ml", "llm", "gpt",
-    "claude", "openai", "anthropic", "groq", "llama", "mistral", "gemini",
-    "deepseek", "qwen", "phi", "grok", "perplexity", "cohere",
-    # Techniques
-    "neural", "deep learning", "rag", "vector", "embedding", "fine-tun",
-    "inference", "transformer", "diffusion", "multimodal", "text-to",
-    "image generation", "reasoning", "benchmark",
-    # Frameworks & tools
-    "langchain", "langgraph", "llamaindex", "ollama", "hugging face",
-    "pytorch", "tensorflow", "copilot", "cursor", "codeium", "replit",
-    # Automation & dev
-    "automation", "agent", "agentic", "workflow", "pipeline", "scraper",
-    "n8n", "zapier", "make.com", "github actions", "cron",
-    # Stack
-    "python", "vercel", "next.js", "typescript", "supabase", "fastapi",
-    # Business
-    "saas", "open source", "self-hosted", "api", "upwork", "freelance",
-    "solopreneur", "indie hacker", "devtools", "startup", "launch",
-    # Broad tech that often correlates
-    "model", "chatbot", "assistant", "autonomous", "prompt",
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    )
 }
+LIMIT = 5
 
 
-# ── HackerNews (via Algolia API — more reliable, keyword-searchable) ──────────
-# Firebase endpoint is sometimes firewalled; Algolia is the official HN search API.
+# ── Anthropic News ────────────────────────────────────────────────────────────
 
-HN_SEARCH_QUERIES = [
-    "AI LLM automation agent",
-    "machine learning open source",
-    "Claude OpenAI Anthropic Groq",
-    "python scraper pipeline workflow",
-    "SaaS developer tools launch",
-]
-
-
-def scrape_hackernews(limit: int = 30) -> list[dict]:
-    print("  [HN] Fetching stories via Algolia HN Search API...")
-    base = "https://hn.algolia.com/api/v1/search"
-    seen_ids = set()
-    items    = []
-
-    for query in HN_SEARCH_QUERIES:
-        if len(items) >= limit:
-            break
-        try:
-            resp = requests.get(
-                base,
-                params={
-                    "query":       query,
-                    "tags":        "story",
-                    "hitsPerPage": 15,
-                    "numericFilters": "points>5",  # filter out very low-signal posts
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-            hits = resp.json().get("hits", [])
-        except Exception as e:
-            print(f"  [HN] Query '{query}' failed: {e}")
-            continue
-
-        for hit in hits:
-            story_id = hit.get("objectID", "")
-            if story_id in seen_ids:
-                continue
-            seen_ids.add(story_id)
-
-            title = hit.get("title", "")
-            if not title:
-                continue
-
-            items.append({
-                "source":    "HackerNews",
-                "title":     title,
-                "url":       hit.get("url") or f"https://news.ycombinator.com/item?id={story_id}",
-                "hn_url":    f"https://news.ycombinator.com/item?id={story_id}",
-                "score":     hit.get("points", 0),
-                "comments":  hit.get("num_comments", 0),
-                "author":    hit.get("author", ""),
-                "timestamp": hit.get("created_at_i", 0),
-            })
-
-            if len(items) >= limit:
-                break
-
-        time.sleep(0.2)
-
-    print(f"  [HN] {len(items)} stories found")
-    return items
-
-
-# ── ProductHunt ───────────────────────────────────────────────────────────────
-
-PH_QUERY = """
-query TodaysPosts($after: String) {
-  posts(order: VOTES, first: 20, after: $after) {
-    nodes {
-      id
-      name
-      tagline
-      url
-      votesCount
-      topics {
-        nodes { name slug }
-      }
-    }
-    pageInfo { hasNextPage endCursor }
-  }
-}
-"""
-
-PH_TARGET_TOPICS = {
-    "artificial-intelligence", "ai", "developer-tools", "machine-learning",
-    "productivity", "no-code", "automation", "saas", "api", "open-source",
-}
-
-
-def scrape_producthunt(limit: int = 5) -> list[dict]:
-    token = os.environ.get("PRODUCTHUNT_TOKEN", "")
-    if not token:
-        print("  [PH] PRODUCTHUNT_TOKEN not set — skipping ProductHunt")
-        return []
-
-    print("  [PH] Fetching today's posts...")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/json",
-        "Accept":        "application/json",
-    }
-
+def scrape_anthropic(limit: int = LIMIT) -> list[dict]:
+    print("  [Anthropic] Fetching anthropic.com/news...")
+    url = "https://www.anthropic.com/news"
     try:
-        resp = requests.post(
-            "https://api.producthunt.com/v2/api/graphql",
-            headers=headers,
-            json={"query": PH_QUERY, "variables": {"after": None}},
-            timeout=15,
-        )
+        resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
-        print(f"  [PH] Request failed: {e}")
+        print(f"  [Anthropic] Request failed: {e}")
         return []
 
-    if "errors" in data:
-        print(f"  [PH] API error: {data['errors']}")
-        return []
-
-    posts = data.get("data", {}).get("posts", {}).get("nodes", [])
+    soup = BeautifulSoup(resp.text, "html.parser")
     items = []
 
-    for post in posts:
-        topic_slugs = {t["slug"] for t in post.get("topics", {}).get("nodes", [])}
-        if not topic_slugs.intersection(PH_TARGET_TOPICS):
+    # Articles are <a> tags linking to /news/* with a title inside
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("/news/") or href == "/news":
             continue
 
-        topic_names = [t["name"] for t in post.get("topics", {}).get("nodes", [])]
+        title_el = a.find(["h2", "h3", "h4", "p"])
+        title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+        if not title or len(title) < 10:
+            continue
+
+        full_url = f"https://www.anthropic.com{href}" if href.startswith("/") else href
+
+        # Deduplicate by URL
+        if any(i["url"] == full_url for i in items):
+            continue
+
         items.append({
-            "source":   "ProductHunt",
-            "title":    f"{post['name']} — {post['tagline']}",
-            "url":      post.get("url", f"https://www.producthunt.com/posts/{post['id']}"),
-            "votes":    post.get("votesCount", 0),
-            "topics":   topic_names,
-            "author":   "",
-            "timestamp": 0,
+            "source": "Anthropic News",
+            "title": title,
+            "url": full_url,
         })
 
         if len(items) >= limit:
             break
 
-    print(f"  [PH] {len(items)} relevant products found")
+    print(f"  [Anthropic] {len(items)} articles found")
     return items
 
 
-# ── Reddit r/artificial ───────────────────────────────────────────────────────
+# ── HuggingFace Blog ──────────────────────────────────────────────────────────
 
-def scrape_reddit(limit: int = 10) -> list[dict]:
-    print("  [Reddit] Fetching r/artificial top posts...")
-
-    headers = {"User-Agent": "JarvisAIBriefing/1.0 (daily news agent)"}
-    url = "https://www.reddit.com/r/artificial/top.json"
-    params = {"limit": 25, "t": "day"}
-
+def scrape_huggingface(limit: int = LIMIT) -> list[dict]:
+    print("  [HuggingFace] Fetching huggingface.co/blog...")
+    url = "https://huggingface.co/blog"
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
     except Exception as e:
-        print(f"  [Reddit] Request failed: {e}")
+        print(f"  [HuggingFace] Request failed: {e}")
         return []
 
-    posts = data.get("data", {}).get("children", [])
+    soup = BeautifulSoup(resp.text, "html.parser")
     items = []
 
-    for post in posts:
-        p = post.get("data", {})
-        if p.get("stickied") or p.get("is_self") and len(p.get("selftext", "")) < 30:
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        # Blog post URLs look like /blog/some-slug (not the /blog index itself)
+        if not href.startswith("/blog/") or href == "/blog/":
+            continue
+
+        title_el = a.find(["h2", "h3", "h4"])
+        title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+        if not title or len(title) < 10:
+            continue
+
+        full_url = f"https://huggingface.co{href}" if href.startswith("/") else href
+
+        if any(i["url"] == full_url for i in items):
             continue
 
         items.append({
-            "source":    "Reddit r/artificial",
-            "title":     p.get("title", ""),
-            "url":       p.get("url") or f"https://reddit.com{p.get('permalink', '')}",
-            "reddit_url": f"https://reddit.com{p.get('permalink', '')}",
-            "score":     p.get("score", 0),
-            "comments":  p.get("num_comments", 0),
-            "author":    p.get("author", ""),
-            "timestamp": int(p.get("created_utc", 0)),
+            "source": "HuggingFace Blog",
+            "title": title,
+            "url": full_url,
         })
 
         if len(items) >= limit:
             break
 
-    print(f"  [Reddit] {len(items)} posts found")
+    print(f"  [HuggingFace] {len(items)} articles found")
+    return items
+
+
+# ── VentureBeat AI ────────────────────────────────────────────────────────────
+
+def scrape_venturebeat(limit: int = LIMIT) -> list[dict]:
+    print("  [VentureBeat] Fetching venturebeat.com/category/ai/...")
+    url = "https://venturebeat.com/category/ai/"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"  [VentureBeat] Request failed: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
+
+    for article in soup.find_all("article"):
+        a = article.find("a", href=True)
+        if not a:
+            continue
+        href = a["href"]
+        if "venturebeat.com" not in href and not href.startswith("/"):
+            continue
+
+        title_el = article.find(["h2", "h3", "h4"])
+        title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+        if not title or len(title) < 10:
+            continue
+
+        full_url = href if href.startswith("http") else f"https://venturebeat.com{href}"
+
+        if any(i["url"] == full_url for i in items):
+            continue
+
+        items.append({
+            "source": "VentureBeat AI",
+            "title": title,
+            "url": full_url,
+        })
+
+        if len(items) >= limit:
+            break
+
+    print(f"  [VentureBeat] {len(items)} articles found")
     return items
 
 
@@ -258,15 +183,17 @@ def run() -> list[dict]:
     print("  AGENT 1 -- SCRAPER")
     print(f"{'='*60}\n")
 
-    hn_items     = scrape_hackernews(limit=30)
-    ph_items     = scrape_producthunt(limit=5)
-    reddit_items = scrape_reddit(limit=10)
+    anthropic_items  = scrape_anthropic(limit=LIMIT)
+    time.sleep(0.5)
+    hf_items         = scrape_huggingface(limit=LIMIT)
+    time.sleep(0.5)
+    vb_items         = scrape_venturebeat(limit=LIMIT)
 
-    all_items = hn_items + ph_items + reddit_items
+    all_items = anthropic_items + hf_items + vb_items
     print(f"\n  Total items collected: {len(all_items)}")
-    print(f"    HackerNews:  {len(hn_items)}")
-    print(f"    ProductHunt: {len(ph_items)}")
-    print(f"    Reddit:      {len(reddit_items)}")
+    print(f"    Anthropic News:  {len(anthropic_items)}")
+    print(f"    HuggingFace Blog:{len(hf_items)}")
+    print(f"    VentureBeat AI:  {len(vb_items)}")
 
     save(all_items)
     return all_items

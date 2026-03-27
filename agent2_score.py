@@ -44,7 +44,7 @@ SCORE_PROMPT = """You are scoring news items for Aryan, a 24-year-old AI automat
 - Builds AI automation pipelines in Python (agents, scrapers, schedulers)
 - Uses Claude, Groq, LLaMA, GitHub Actions, Vercel, Next.js daily
 - Sells AI automation services on Upwork and Fiverr
-- Wants to know about new AI tools, business opportunities, tutorials he can apply today
+- Wants to know about new AI tools, model releases, and product launches he can apply today
 
 Score each item in the JSON array below. For each item return:
 - "id": the same id from input
@@ -54,10 +54,12 @@ Score each item in the JSON array below. For each item return:
 - "action_required": true if Aryan should act on this today, false otherwise
 
 Scoring guide:
-- 9-10: New AI tool/model he can use right now, or a direct business opportunity
-- 7-8:  Relevant tutorial, framework update, or useful business insight
+- 9-10: New AI tool/model/API he can use right now, model release, or direct business opportunity
+- 7-8:  Product launch, framework update, or useful practical insight
 - 6:    Mildly relevant — worth knowing but no immediate action
-- 1-5:  Academic, off-topic, or too generic
+- 1-5:  Academic research papers, highly technical ML theory, off-topic, or too generic — score these LOW
+
+Important: penalise anything that is a research paper, benchmark study, or academic/theoretical content. Aryan wants practical tools and launches, not papers.
 
 Items to score:
 {items_json}
